@@ -1,6 +1,6 @@
 {
   "name": "next-offline",
-  "version": "5.0.5",
+  "version": "6.0.0",
   "main": "index.js",
   "license": "MIT",
   "files": [
@@ -44,12 +44,15 @@
     "sw-helpers"
   ],
   "peerDependencies": {
-    "next": ">=7.0.0",
-    "webpack": "^4.19.1"
+    "next": ">=10.0.0",
+    "webpack": ">=5.0.0"
   },
   "dependencies": {
-    "copy-webpack-plugin": "~5.1.2",
-    "fs-extra": "~8.1.0",
-    "workbox-webpack-plugin": "^5.0.0"
+    "copy-webpack-plugin": "^9.0.0",
+    "fs-extra": "^10.0.0",
+    "workbox-webpack-plugin": "^6.1.5"
+  },
+  "engines": {
+    "node": ">=12"
   }
 }

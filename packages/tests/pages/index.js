@@ -6,8 +6,12 @@ const App = () => {
     <>
       <h1 className="title">tests</h1>
 
-      <button onClick={() => register()}>register</button>
-      <button onClick={() => unregister()}>unregister</button>
+      <button id="register-sw" onClick={() => register()}>
+        register
+      </button>
+      <button id="unregister-sw" onClick={() => unregister()}>
+        unregister
+      </button>
 
       <img src="/image.jpg" />
 

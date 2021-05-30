@@ -1,17 +1,16 @@
 const { GenerateSW, InjectManifest } = require('workbox-webpack-plugin');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
-const { readFile, writeFile } = require('fs-extra');
+const { readFile, writeFile, copy } = require('fs-extra');
 const { join } = require('path');
-const { cwd } = require('process');
-
-const exportSw = require('./export');
 
 // Next build metadata files that shouldn't be included in the pre-cache manifest.
+// TODO: ignore _buildManifest.js and _ssgManifest.js ???
 const preCacheManifestBlacklist = ['react-loadable-manifest.json', 'build-manifest.json', /\.map$/];
 
 // Directory where public assets must be placed in Next projects.
-const nextAssetDirectory = 'static';
+const nextAssetDirectory = 'public';
 
+/** @type {import('workbox-webpack-plugin').InjectManifestOptions} */
 const defaultInjectOpts = {
   exclude: preCacheManifestBlacklist,
   modifyURLPrefix: {
@@ -20,6 +19,7 @@ const defaultInjectOpts = {
   },
 };
 
+/** @type {import('workbox-webpack-plugin').GenerateSWOptions} */
 const defaultGenerateOpts = {
   ...defaultInjectOpts,
   // As of Workbox v5 Alpha there isn't a well documented way to move workbox runtime into the directory
@@ -40,74 +40,142 @@ const defaultGenerateOpts = {
   ],
 };
 
-module.exports = (nextConfig = {}) => ({
-  ...nextConfig,
-  exportPathMap: exportSw(nextConfig),
-  webpack(config, options) {
-    if (!options.defaultLoaders) {
-      throw new Error(
-        'This plugin is not compatible with Next.js versions below 5.0.0 https://err.sh/next-plugins/upgrade',
-      );
-    }
+const writeTemplate = async (input, output, subs) => {
+  let content = await readFile(input, 'utf8');
 
-    const {
-      devSwSrc = join(__dirname, 'service-worker.js'),
-      dontAutoRegisterSw = false,
-      generateInDevMode = false,
-      generateSw = true,
-      // Before adjusting "registerSwPrefix" or "scope", read:
-      // https://developers.google.com/web/ilt/pwa/introduction-to-service-worker#registration_and_scope
-      registerSwPrefix = '',
-      scope = '/',
-      workboxOpts = {},
-    } = nextConfig;
+  for (const key in subs) {
+    content = content.replace(`\{${key}\}`, subs[key]);
+  }
 
-    const skipDuringDevelopment = options.dev && !generateInDevMode;
+  await writeFile(output, content, 'utf8');
+};
 
-    // Generate SW
-    if (skipDuringDevelopment) {
-      // Simply copy development service worker.
-      config.plugins.push(new CopyWebpackPlugin([devSwSrc]));
-    } else if (!options.isServer) {
-      // Only run once for the client build.
-      config.plugins.push(
-        // Workbox uses Webpack's asset manifest to generate the SW's pre-cache manifest, so we need
-        // to copy the app's assets into the Webpack context so those are picked up.
-        new CopyWebpackPlugin([{ from: `${join(cwd(), nextAssetDirectory)}/**/*` }]),
-        generateSw
-          ? new GenerateSW({ ...defaultGenerateOpts, ...workboxOpts })
-          : new InjectManifest({ ...defaultInjectOpts, ...workboxOpts }),
-      );
-    }
+const mergeRewrites = (prev, rewritesArr) => {
+  if (!prev) return rewritesArr;
 
-    if (!skipDuringDevelopment) {
-      // Register SW
-      const originalEntry = config.entry;
-      config.entry = async () => {
-        const entries = await originalEntry();
-        const swCompiledPath = join(__dirname, 'register-sw-compiled.js');
-        // See https://github.com/zeit/next.js/blob/canary/examples/with-polyfills/next.config.js for a reference on how to add new entrypoints
-        if (
-          entries['main.js'] &&
-          !entries['main.js'].includes(swCompiledPath) &&
-          !dontAutoRegisterSw
-        ) {
-          let content = await readFile(require.resolve('./register-sw.js'), 'utf8');
-          content = content.replace('{REGISTER_SW_PREFIX}', registerSwPrefix);
-          content = content.replace('{SW_SCOPE}', scope);
+  if (Array.isArray(prev)) return [...prev, ...rewritesArr];
 
-          await writeFile(swCompiledPath, content, 'utf8');
+  return {
+    ...prev,
+    afterFiles: [...(prev.afterFiles || []), ...rewritesArr],
+  };
+};
 
-          entries['main.js'].unshift(swCompiledPath);
+module.exports = (nextConfig = {}) => {
+  const {
+    devSwSrc = join(__dirname, 'service-worker.js'),
+    dontAutoRegisterSw = false,
+    generateInDevMode = false,
+    generateSw = true,
+    // Before adjusting "workboxOpts.swDest" or "scope", read:
+    // https://developers.google.com/web/ilt/pwa/introduction-to-service-worker#registration_and_scope
+    scope = '/',
+    workboxOpts = {},
+  } = nextConfig;
+
+  const swRelativeDest =
+    workboxOpts.swDest != null ? join(workboxOpts.swDest) : 'service-worker.js';
+
+  const swBuildDest = join('static', swRelativeDest);
+
+  return {
+    ...nextConfig,
+
+    ...(process.env.NEXT_OFFLINE_EXPORT
+      ? {
+          // Copy service worker from Next.js build dir into the export dir during `next export`
+          async exportPathMap(...args) {
+            const [defaultPathMap, { dev, distDir, outDir }] = args;
+
+            await copy(join(distDir, swBuildDest), join(outDir, swRelativeDest));
+
+            // Run user's exportPathMap function if available.
+            return nextConfig.exportPathMap ? nextConfig.exportPathMap(...args) : defaultPathMap;
+          },
         }
-        return entries;
-      };
-    }
+      : {
+          // rewrite service worker path in a Next.js dynamic server i.e. `next start` or `next dev`
+          async rewrites() {
+            return mergeRewrites(nextConfig.rewrites && (await nextConfig.rewrites()), [
+              {
+                source: `/${swRelativeDest}`,
+                destination: `/_next/${swBuildDest}`,
+              },
+            ]);
+          },
+        }),
 
-    if (typeof nextConfig.webpack === 'function') {
-      return nextConfig.webpack(config, options);
-    }
+    webpack(config, options) {
+      if (!options.defaultLoaders) {
+        throw new Error(
+          'This plugin is not compatible with Next.js versions below 5.0.0 https://err.sh/next-plugins/upgrade',
+        );
+      }
 
-    return config;
-  },
-});
+      const skipDuringDevelopment = options.dev && !generateInDevMode;
+
+      // Generate SW
+      if (skipDuringDevelopment) {
+        // Simply copy development service worker.
+        config.plugins.push(new CopyWebpackPlugin({ patterns: [devSwSrc] }));
+      } else if (!options.isServer) {
+        // Only run once for the client build.
+        config.plugins.push(
+          // Workbox uses Webpack's asset manifest to generate the SW's pre-cache manifest, so we need
+          // to copy the app's assets into the Webpack context so those are picked up.
+          new CopyWebpackPlugin({
+            patterns: [{ from: `${join(process.cwd(), nextAssetDirectory)}/**/*` }],
+          }),
+
+          generateSw
+            ? new GenerateSW({
+                ...defaultGenerateOpts,
+                ...workboxOpts,
+                swDest: swBuildDest,
+              })
+            : new InjectManifest({
+                ...defaultInjectOpts,
+                ...workboxOpts,
+                swDest: swBuildDest,
+              }),
+        );
+      }
+
+      if (!options.isServer && !skipDuringDevelopment && !dontAutoRegisterSw) {
+        // Register SW
+
+        const addToEntry = 'main.js';
+        const originalEntry = config.entry;
+        config.entry = async () => {
+          const entries = await originalEntry();
+
+          if (!Array.isArray(entries[addToEntry])) {
+            console.warn(
+              `[next-offline] Failed to add service worker auto-registration script: webpack entry-point "${addToEntry}" is not an array.`,
+            );
+            return entries;
+          }
+
+          const swCompiledPath = join(__dirname, 'register-sw-compiled.js');
+
+          if (!entries[addToEntry].includes(swCompiledPath)) {
+            await writeTemplate(require.resolve('./register-sw.js'), swCompiledPath, {
+              SW_PATH: `/${swRelativeDest}`,
+              SW_SCOPE: scope,
+            });
+
+            entries[addToEntry].unshift(swCompiledPath);
+          }
+
+          return entries;
+        };
+      }
+
+      if (typeof nextConfig.webpack === 'function') {
+        return nextConfig.webpack(config, options);
+      }
+
+      return config;
+    },
+  };
+};
