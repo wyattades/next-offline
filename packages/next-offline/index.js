@@ -3,9 +3,16 @@ const CopyWebpackPlugin = require('copy-webpack-plugin');
 const { readFile, writeFile, copy } = require('fs-extra');
 const { join } = require('path');
 
-// Next build metadata files that shouldn't be included in the pre-cache manifest.
-// TODO: ignore _buildManifest.js and _ssgManifest.js ???
-const preCacheManifestBlacklist = ['react-loadable-manifest.json', 'build-manifest.json', /\.map$/];
+const preCacheManifestBlacklist = [
+  // Next build metadata files that shouldn't be included in the pre-cache manifest.
+  'react-loadable-manifest.json',
+  'build-manifest.json',
+  '_ssgManifest.js',
+  '_buildManifest.js',
+
+  // source maps
+  /\.map$/,
+];
 
 // Directory where public assets must be placed in Next projects.
 const nextAssetDirectory = 'public';
@@ -15,7 +22,7 @@ const defaultInjectOpts = {
   exclude: preCacheManifestBlacklist,
   modifyURLPrefix: {
     'static/': '_next/static/',
-    'public/': '_next/public/',
+    'public/': '/',
   },
 };
 
@@ -117,7 +124,9 @@ module.exports = (nextConfig = {}) => {
       // Generate SW
       if (skipDuringDevelopment) {
         // Simply copy development service worker.
-        config.plugins.push(new CopyWebpackPlugin({ patterns: [devSwSrc] }));
+        config.plugins.push(
+          new CopyWebpackPlugin({ patterns: [{ from: devSwSrc, to: swRelativeDest }] }),
+        );
       } else if (!options.isServer) {
         // Only run once for the client build.
         config.plugins.push(
@@ -142,7 +151,7 @@ module.exports = (nextConfig = {}) => {
       }
 
       if (!options.isServer && !skipDuringDevelopment && !dontAutoRegisterSw) {
-        // Register SW
+        // Inject auto-register-sw code
 
         const addToEntry = 'main.js';
         const originalEntry = config.entry;
