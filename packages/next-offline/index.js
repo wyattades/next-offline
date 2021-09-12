@@ -19,10 +19,10 @@ const nextAssetDirectory = 'public';
 
 /** @type {import('workbox-webpack-plugin').InjectManifestOptions} */
 const defaultInjectOpts = {
-  exclude: preCacheManifestBlacklist,
+  exclude: [...preCacheManifestBlacklist], // `exclude` gets mutated
   modifyURLPrefix: {
-    'static/': '_next/static/',
-    'public/': '/',
+    '/_next//static/': '/_next/static/', // fix weird url bug
+    '/_next/public/': '/',
   },
 };
 
@@ -68,6 +68,10 @@ const mergeRewrites = (prev, rewritesArr) => {
   };
 };
 
+/**
+ * @param {import('next/dist/next-server/server/config').NextConfig} nextConfig
+ * @returns {import('next/dist/next-server/server/config').NextConfig}
+ */
 module.exports = (nextConfig = {}) => {
   const {
     devSwSrc = join(__dirname, 'service-worker.js'),
@@ -145,6 +149,23 @@ module.exports = (nextConfig = {}) => {
             : new InjectManifest({
                 ...defaultInjectOpts,
                 ...workboxOpts,
+                manifestTransforms: [
+                  (manifest) => {
+                    // injectOptions.exclude doesn't seem to work, so do it manually here
+                    manifest = manifest.filter(({ url }) => {
+                      for (const reg of preCacheManifestBlacklist) {
+                        if (typeof reg === 'string') {
+                          if (url.endsWith('/' + reg)) return false;
+                        } else if (reg instanceof RegExp) {
+                          if (reg.test(url)) return false;
+                        }
+                      }
+                      return true;
+                    });
+
+                    return { manifest };
+                  },
+                ],
                 swDest: swBuildDest,
               }),
         );
